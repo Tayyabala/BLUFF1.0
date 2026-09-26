@@ -227,3 +227,81 @@ label { display: block; color: var(--muted); font-weight: 700; font-size: 13px; 
 @media (min-width: 540px) {
   .app { padding-left: 20px; padding-right: 20px; }
 }
+
+/* Avatar colorati dei giocatori */
+
+.player-avatar {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--avatar-color, #cccccc);
+  color: #151515;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  font-size: 17px;
+  font-weight: 900;
+  line-height: 1;
+  user-select: none;
+}
+
+.player-identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.player-label {
+  min-width: 0;
+}
+
+.player-identity .player-name {
+  overflow-wrap: anywhere;
+}
+
+.score-rank,
+.score-num {
+  flex-shrink: 0;
+}
+
+.avatar-chip {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  width: 68px;
+  vertical-align: middle;
+}
+
+.avatar-caption {
+  width: 100%;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.result-author {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.result-votes {
+  margin-top: 14px;
+}
+
+.voter-avatars {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px 8px;
+  margin-top: 8px;
+}
