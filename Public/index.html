@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#111111" />
+  <title>BLUFF1.0</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <div class="brand">BLUFF<span>1.0</span></div>
+      <div id="roomBadge" class="room-badge hidden"></div>
+    </header>
+
+    <section id="homeScreen" class="screen active">
+      <div class="hero">
+        <p class="eyebrow">MULTIPLAYER QUIZ</p>
+        <h1>Inventala.<br>Falli cascare.<br>Indovina.</h1>
+        <p class="subtitle">Scrivi una risposta falsa credibile, trova quella vera e guadagna punti quando gli altri votano il tuo bluff.</p>
+      </div>
+
+      <div class="card">
+        <label>Il tuo nome</label>
+        <input id="nameInput" maxlength="18" placeholder="Es. Matteo" autocomplete="nickname" />
+
+        <div class="home-actions">
+          <button id="createBtn" class="btn primary">Crea partita</button>
+          <button id="showJoinBtn" class="btn secondary">Entra con codice</button>
+        </div>
+
+        <div id="joinBox" class="join-box hidden">
+          <label>Codice stanza</label>
+          <input id="codeInput" maxlength="4" placeholder="ABCD" autocapitalize="characters" />
+          <button id="joinBtn" class="btn primary">Entra</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="lobbyScreen" class="screen">
+      <div class="center">
+        <p class="eyebrow">CODICE STANZA</p>
+        <div id="bigCode" class="big-code">----</div>
+        <p class="muted">Condividi questo codice con gli altri giocatori.</p>
+      </div>
+
+      <div class="card">
+        <div class="section-title-row">
+          <h2>Giocatori</h2>
+          <span id="playerCount" class="pill">0</span>
+        </div>
+        <div id="playersList" class="players-list"></div>
+      </div>
+
+      <div id="hostControls" class="card hidden">
+        <label>Numero di round</label>
+        <select id="roundsSelect">
+          <option value="3">3 round</option>
+          <option value="5" selected>5 round</option>
+          <option value="7">7 round</option>
+          <option value="10">10 round</option>
+        </select>
+        <button id="startBtn" class="btn primary">Inizia partita</button>
+      </div>
+
+      <p id="guestWaiting" class="waiting hidden">Aspetta che l'host inizi la partita…</p>
+    </section>
+
+    <section id="bluffScreen" class="screen">
+      <div class="round-line">
+        <span id="roundLabel">Round 1/5</span>
+        <span class="phase-tag">SCRIVI IL BLUFF</span>
+      </div>
+
+      <div class="question-card">
+        <p class="eyebrow">DOMANDA</p>
+        <h2 id="questionText">Domanda...</h2>
+      </div>
+
+      <div class="card">
+        <label>La tua risposta falsa</label>
+        <input id="bluffInput" maxlength="60" placeholder="Scrivi qualcosa di credibile…" />
+        <button id="submitBluffBtn" class="btn primary">Invia bluff</button>
+        <p class="small muted">Non scrivere la risposta vera. Se la indovini già, il gioco te lo dirà 👀</p>
+      </div>
+
+      <div id="bluffWaiting" class="waiting hidden">
+        <div class="spinner"></div>
+        <span id="submissionProgress">Aspettando gli altri…</span>
+      </div>
+    </section>
+
+    <section id="voteScreen" class="screen">
+      <div class="round-line">
+        <span>Qual è quella vera?</span>
+        <span class="phase-tag">VOTA</span>
+      </div>
+
+      <div class="question-card compact">
+        <p class="eyebrow">DOMANDA</p>
+        <h2 id="voteQuestionText"></h2>
+      </div>
+
+      <div id="optionsList" class="options-list"></div>
+
+      <div id="voteWaiting" class="waiting hidden">
+        <div class="spinner"></div>
+        <span id="voteProgress">Aspettando gli altri…</span>
+      </div>
+    </section>
+
+    <section id="resultsScreen" class="screen">
+      <div class="round-line">
+        <span>Risultati</span>
+        <span class="phase-tag success">RIVELAZIONE</span>
+      </div>
+
+      <div class="question-card compact">
+        <p class="eyebrow">RISPOSTA CORRETTA</p>
+        <h2 id="correctAnswerText"></h2>
+      </div>
+
+      <div id="resultOptions" class="result-options"></div>
+
+      <div class="card">
+        <h2>Classifica</h2>
+        <div id="scoreboard" class="scoreboard"></div>
+      </div>
+
+      <button id="nextBtn" class="btn primary hidden">Prossimo round</button>
+      <p id="waitHostNext" class="waiting hidden">Aspetta che l'host continui…</p>
+    </section>
+
+    <section id="finalScreen" class="screen">
+      <div class="center final-hero">
+        <p class="eyebrow">PARTITA FINITA</p>
+        <h1>🏆 BLUFF1.0</h1>
+        <p class="subtitle">Classifica finale</p>
+      </div>
+
+      <div class="card">
+        <div id="finalScoreboard" class="scoreboard final"></div>
+      </div>
+
+      <button id="restartBtn" class="btn primary hidden">Gioca ancora</button>
+      <p id="waitHostRestart" class="waiting hidden">Aspetta che l'host riavvii la partita…</p>
+    </section>
+
+    <div id="toast" class="toast hidden"></div>
+  </main>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
