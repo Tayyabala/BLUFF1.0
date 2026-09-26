@@ -386,17 +386,38 @@ io.on("connection", socket => {
     broadcastRoom(room);
   });
 
-  socket.on("start_game", (_, cb) => {
-    const room = rooms.get(socket.data.roomCode);
-    if (!room) return cb?.({ ok: false, error: "Stanza non trovata." });
-    if (room.hostId !== socket.id) return cb?.({ ok: false, error: "Solo l'host può iniziare." });
-    if (activePlayers(room).length < 2) return cb?.({ ok: false, error: "Servono almeno 2 giocatori." });
-    if (room.phase !== "lobby") return cb?.({ ok: false, error: "La partita è già iniziata." });
+  socket.on("start_game", ({ totalRounds }, cb) => {
+  const room = rooms.get(socket.data.roomCode);
 
-    room.roundIndex = 0;
-    startRound(room);
-    cb?.({ ok: true });
-  });
+  if (!room)
+    return cb?.({ ok: false, error: "Stanza non trovata." });
+
+  if (room.hostId !== socket.id)
+    return cb?.({ ok: false, error: "Solo l'host può iniziare." });
+
+  if (activePlayers(room).length < 2)
+    return cb?.({ ok: false, error: "Servono almeno 2 giocatori." });
+
+  if (room.phase !== "lobby")
+    return cb?.({ ok: false, error: "La partita è già iniziata." });
+
+  // Imposta il numero di round scelto nella lobby
+  room.totalRounds = Math.min(
+    10,
+    Math.max(3, Number(totalRounds) || 5)
+  );
+
+  // Genera le domande in base al numero di round scelto
+  room.questionOrder = [...Array(QUESTION_BANK.length).keys()]
+    .sort(() => Math.random() - 0.5)
+    .slice(0, room.totalRounds);
+
+  room.roundIndex = 0;
+
+  startRound(room);
+
+  cb?.({ ok: true });
+});
 
   socket.on("submit_bluff", ({ text }, cb) => {
     const room = rooms.get(socket.data.roomCode);
