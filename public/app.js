@@ -161,7 +161,9 @@ $("joinBtn").addEventListener("click", () => {
 });
 
 $("startBtn").addEventListener("click", () => {
-  socket.emit("start_game", {}, res => {
+  const totalRounds = Number($("roundsSelect").value || 5);
+
+  socket.emit("start_game", { totalRounds }, res => {
     if (!res?.ok) toast(res?.error || "Impossibile iniziare.");
   });
 });
