@@ -286,6 +286,14 @@ const QUESTION_BANK = [
 
 const rooms = new Map();
 
+const { randomUUID, randomBytes } = require("crypto");
+
+// La stanza viene eliminata dopo 30 minuti con tutti offline.
+const EMPTY_ROOM_TTL = 30 * 60 * 1000;
+
+// Prima di saltare un giocatore offline, attende 60 secondi.
+const RECONNECT_GRACE = 60 * 1000;
+
 function normalize(text) {
   return String(text || "")
     .trim()
@@ -298,12 +306,15 @@ function normalize(text) {
 function makeRoomCode() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let code;
+
   do {
     code = "";
+
     for (let i = 0; i < 4; i++) {
       code += chars[Math.floor(Math.random() * chars.length)];
     }
   } while (rooms.has(code));
+
   return code;
 }
 
@@ -311,20 +322,22 @@ function safeName(name) {
   return String(name || "").trim().slice(0, 18);
 }
 
+// COLORI E DATI PUBBLICI
+
 function publicPlayers(room) {
   const palette = [
-    "#FF7676", // Rosso
-    "#69AEFF", // Blu
-    "#65D99A", // Verde
-    "#FFD166", // Giallo
-    "#BE98FF", // Viola
-    "#FFAD66", // Arancione
-    "#FF91C8", // Rosa
-    "#66DDD5", // Turchese
-    "#C4DE70", // Lime
-    "#C9AC91", // Sabbia
-    "#A8BCFF", // Lavanda
-    "#EEEEEE"  // Bianco
+    "#FF7676",
+    "#69AEFF",
+    "#65D99A",
+    "#FFD166",
+    "#BE98FF",
+    "#FFAD66",
+    "#FF91C8",
+    "#66DDD5",
+    "#C4DE70",
+    "#C9AC91",
+    "#A8BCFF",
+    "#EEEEEE"
   ];
 
   const usedColors = new Set(
@@ -338,7 +351,6 @@ function publicPlayers(room) {
 
     let color = palette.find(c => !usedColors.has(c));
 
-    // Se finiscono i colori della palette, ne genera altri.
     if (!color) {
       let index = room.avatarColorIndex || 0;
 
@@ -364,47 +376,155 @@ function publicPlayers(room) {
   }));
 }
 
-function broadcastRoom(room) {
-  io.to(room.code).emit("room_state", {
+function roomState(room) {
+  return {
     code: room.code,
     hostId: room.hostId,
     phase: room.phase,
     roundNumber: room.roundIndex + 1,
     totalRounds: room.totalRounds,
     players: publicPlayers(room)
-  });
+  };
+}
+
+function broadcastRoom(room) {
+  io.to(room.code).emit("room_state", roomState(room));
 }
 
 function activePlayers(room) {
   return [...room.players.values()].filter(p => p.connected);
 }
 
+function waitingPlayers(room) {
+  return [...room.players.values()].filter(p =>
+    p.connected ||
+    Date.now() - p.disconnectedAt < RECONNECT_GRACE
+  );
+}
+
+// CONTATORI DI RISPOSTE E VOTI
+
+function progress(room, map) {
+  const pending = waitingPlayers(room)
+    .filter(p => !map.has(p.id))
+    .length;
+
+  return {
+    count: map.size,
+    total: map.size + pending
+  };
+}
+
+function sendProgress(room, target = io.to(room.code)) {
+  if (room.phase === "bluff") {
+    const p = progress(room, room.submissions);
+
+    target.emit("submission_progress", {
+      submitted: p.count,
+      total: p.total
+    });
+  }
+
+  if (room.phase === "vote") {
+    const p = progress(room, room.votes);
+
+    target.emit("vote_progress", {
+      voted: p.count,
+      total: p.total
+    });
+  }
+}
+
+// DATI PER RIPRISTINARE LA SCHERMATA DEL GIOCATORE
+
+function bluffState(room, player) {
+  return {
+    question: room.currentQuestion.q,
+    roundNumber: room.roundIndex + 1,
+    totalRounds: room.totalRounds,
+    roundKey: room.roundKey,
+    submitted: room.submissions.has(player.id),
+    text: room.submissions.get(player.id) || ""
+  };
+}
+
+function voteState(room, player) {
+  return {
+    question: room.currentQuestion.q,
+    roundKey: room.roundKey,
+
+    options: room.options
+      .filter(o => o.ownerId !== player.id)
+      .map(o => ({
+        id: o.id,
+        text: o.text
+      })),
+
+    voted: room.votes.has(player.id),
+    selectedOptionId: room.votes.get(player.id) || null
+  };
+}
+
+function syncPlayer(socket, room, player) {
+  socket.emit("room_state", roomState(room));
+
+  if (room.phase === "lobby") {
+    socket.emit("back_to_lobby");
+  }
+
+  if (room.phase === "bluff") {
+    socket.emit("bluff_phase", bluffState(room, player));
+  }
+
+  if (room.phase === "vote") {
+    socket.emit("vote_phase", voteState(room, player));
+  }
+
+  if (room.phase === "results") {
+    socket.emit("round_results", room.lastResults);
+  }
+
+  if (room.phase === "final") {
+    socket.emit("game_over", {
+      scores: publicPlayers(room)
+        .sort((a, b) => b.score - a.score)
+    });
+  }
+
+  sendProgress(room, socket);
+}
+
+// PASSAGGIO DA SCRITTURA A VOTAZIONE
+
 function maybeAdvanceAfterSubmission(room) {
-  const active = activePlayers(room);
-  if (active.length >= 2 && active.every(p => room.submissions.has(p.id))) {
+  if (room.phase !== "bluff") return;
+
+  if (
+    activePlayers(room).length > 0 &&
+    room.submissions.size >= 2 &&
+    waitingPlayers(room).every(p => room.submissions.has(p.id))
+  ) {
     buildVotingOptions(room);
   }
 }
 
 function buildVotingOptions(room) {
-  const q = room.currentQuestion;
   const options = [{
-    id: "correct",
-    text: q.a,
+    id: randomUUID(),
+    text: room.currentQuestion.a,
     ownerId: null,
     isCorrect: true
   }];
 
-  for (const [playerId, text] of room.submissions.entries()) {
+  for (const [playerId, text] of room.submissions) {
     options.push({
-      id: `bluff_${playerId}`,
+      id: randomUUID(),
       text,
       ownerId: playerId,
       isCorrect: false
     });
   }
 
-  // Fisher-Yates shuffle
   for (let i = options.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [options[i], options[j]] = [options[j], options[i]];
@@ -414,301 +534,595 @@ function buildVotingOptions(room) {
   room.phase = "vote";
 
   for (const p of activePlayers(room)) {
-    const visible = options
-      .filter(o => o.ownerId !== p.id)
-      .map(o => ({ id: o.id, text: o.text }));
-    io.to(p.id).emit("vote_phase", {
-      question: q.q,
-      options: visible
-    });
+    io.to(p.socketId).emit("vote_phase", voteState(room, p));
   }
 
+  sendProgress(room);
   broadcastRoom(room);
 }
 
 function maybeReveal(room) {
-  const active = activePlayers(room);
-  if (active.length >= 2 && active.every(p => room.votes.has(p.id))) {
+  if (room.phase !== "vote") return;
+
+  if (
+    activePlayers(room).length > 0 &&
+    room.votes.size >= 1 &&
+    waitingPlayers(room).every(p => room.votes.has(p.id))
+  ) {
     scoreRound(room);
   }
 }
 
-function scoreRound(room) {
-  const roundPoints = new Map();
-  for (const p of room.players.values()) roundPoints.set(p.id, 0);
+// PUNTEGGI
 
-  for (const [voterId, optionId] of room.votes.entries()) {
+function scoreRound(room) {
+  if (room.phase !== "vote") return;
+
+  const roundPoints = new Map(
+    [...room.players.keys()].map(id => [id, 0])
+  );
+
+  for (const [voterId, optionId] of room.votes) {
     const option = room.options.find(o => o.id === optionId);
+
     if (!option) continue;
 
     if (option.isCorrect) {
-      roundPoints.set(voterId, (roundPoints.get(voterId) || 0) + 2);
-    } else if (option.ownerId && option.ownerId !== voterId) {
-      roundPoints.set(option.ownerId, (roundPoints.get(option.ownerId) || 0) + 1);
+      roundPoints.set(
+        voterId,
+        (roundPoints.get(voterId) || 0) + 2
+      );
+    } else if (
+      option.ownerId &&
+      option.ownerId !== voterId
+    ) {
+      roundPoints.set(
+        option.ownerId,
+        (roundPoints.get(option.ownerId) || 0) + 1
+      );
     }
   }
 
-  for (const [playerId, pts] of roundPoints.entries()) {
-    const p = room.players.get(playerId);
-    if (p) p.score += pts;
+  for (const [id, points] of roundPoints) {
+    const player = room.players.get(id);
+
+    if (player) {
+      player.score += points;
+    }
   }
 
   room.phase = "results";
 
-  const optionResults = room.options.map(o => {
-    const voters = [...room.votes.entries()]
-      .filter(([, optionId]) => optionId === o.id)
-      .map(([voterId]) => room.players.get(voterId)?.name)
-      .filter(Boolean);
+  room.lastResults = {
+    question: room.currentQuestion.q,
+    correctAnswer: room.currentQuestion.a,
 
-    return {
+    options: room.options.map(o => ({
       id: o.id,
       text: o.text,
       isCorrect: o.isCorrect,
-      ownerName: o.ownerId ? room.players.get(o.ownerId)?.name || "Giocatore" : null,
-      voters
-    };
-  });
 
-  io.to(room.code).emit("round_results", {
-    question: room.currentQuestion.q,
-    correctAnswer: room.currentQuestion.a,
-    options: optionResults,
-    roundPoints: [...roundPoints.entries()].map(([id, points]) => ({
+      ownerName: o.ownerId
+        ? room.players.get(o.ownerId)?.name || "Giocatore"
+        : null,
+
+      voters: [...room.votes]
+        .filter(([, id]) => id === o.id)
+        .map(([id]) => room.players.get(id)?.name)
+        .filter(Boolean)
+    })),
+
+    roundPoints: [...roundPoints].map(([id, points]) => ({
       id,
       name: room.players.get(id)?.name || "Giocatore",
       points
     })),
-    scores: publicPlayers(room).sort((a, b) => b.score - a.score)
-  });
 
+    scores: publicPlayers(room)
+      .sort((a, b) => b.score - a.score)
+  };
+
+  io.to(room.code).emit("round_results", room.lastResults);
   broadcastRoom(room);
+}
+
+// ROUND E DOMANDE
+
+function questionOrder(rounds) {
+  const indices = [...QUESTION_BANK.keys()];
+
+  for (let i = indices.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [indices[i], indices[j]] = [indices[j], indices[i]];
+  }
+
+  return indices.slice(0, rounds);
 }
 
 function startRound(room) {
   if (room.roundIndex >= room.totalRounds) {
     room.phase = "final";
+
     io.to(room.code).emit("game_over", {
-      scores: publicPlayers(room).sort((a, b) => b.score - a.score)
+      scores: publicPlayers(room)
+        .sort((a, b) => b.score - a.score)
     });
+
     broadcastRoom(room);
     return;
   }
 
-  const qIndex = room.questionOrder[room.roundIndex];
-  room.currentQuestion = QUESTION_BANK[qIndex];
+  room.currentQuestion =
+    QUESTION_BANK[room.questionOrder[room.roundIndex]];
+
+  room.roundKey = randomUUID();
   room.submissions = new Map();
   room.votes = new Map();
   room.options = [];
+  room.lastResults = null;
   room.phase = "bluff";
 
-  io.to(room.code).emit("bluff_phase", {
-    question: room.currentQuestion.q,
-    roundNumber: room.roundIndex + 1,
-    totalRounds: room.totalRounds
-  });
+  for (const p of activePlayers(room)) {
+    io.to(p.socketId).emit("bluff_phase", bluffState(room, p));
+  }
 
+  sendProgress(room);
   broadcastRoom(room);
+}
+
+// CONSERVAZIONE DELLE STANZE E GESTIONE HOST
+
+function maintainRoom(room) {
+  const online = activePlayers(room);
+
+  if (!online.length) {
+    if (!room.emptySince) {
+      room.emptySince = Date.now();
+    }
+
+    if (Date.now() - room.emptySince >= EMPTY_ROOM_TTL) {
+      rooms.delete(room.code);
+      return false;
+    }
+  } else {
+    room.emptySince = null;
+
+    const host = room.players.get(room.hostId);
+
+    if (
+      !host ||
+      (
+        !host.connected &&
+        Date.now() - host.disconnectedAt >= RECONNECT_GRACE
+      )
+    ) {
+      room.hostId = online[0].id;
+    }
+
+    maybeAdvanceAfterSubmission(room);
+    maybeReveal(room);
+  }
+
+  return true;
 }
 
 function leaveRoom(socket) {
-  const code = socket.data.roomCode;
-  if (!code || !rooms.has(code)) return;
-  const room = rooms.get(code);
-  const player = room.players.get(socket.id);
-  if (!player) return;
+  const room = rooms.get(socket.data.roomCode);
+  const player = room?.players.get(socket.data.playerId);
 
-  if (room.phase === "lobby") {
-    room.players.delete(socket.id);
-    if (room.hostId === socket.id) {
-      const next = room.players.values().next().value;
-      room.hostId = next?.id || null;
-    }
-  } else {
-    player.connected = false;
+  // Non scollega una nuova sessione quando si chiude la vecchia.
+  if (!player || player.socketId !== socket.id) return;
+
+  player.connected = false;
+  player.socketId = null;
+  player.disconnectedAt = Date.now();
+
+  if (!activePlayers(room).length) {
+    room.emptySince = Date.now();
   }
-
-  if (room.players.size === 0 || activePlayers(room).length === 0) {
-    rooms.delete(code);
-    return;
-  }
-
-  if (room.phase === "bluff") maybeAdvanceAfterSubmission(room);
-  if (room.phase === "vote") maybeReveal(room);
 
   broadcastRoom(room);
+  sendProgress(room);
 }
 
-io.on("connection", socket => {
-  socket.on("create_room", ({ name, totalRounds }, cb) => {
-    const clean = safeName(name);
-    if (!clean) return cb?.({ ok: false, error: "Inserisci un nome." });
+function bindPlayer(socket, room, player) {
+  const old =
+    player.socketId &&
+    io.sockets.sockets.get(player.socketId);
 
-    const rounds = Math.min(10, Math.max(3, Number(totalRounds) || 5));
-    const code = makeRoomCode();
-    const questionOrder = [...Array(QUESTION_BANK.length).keys()]
-      .sort(() => Math.random() - 0.5)
-      .slice(0, rounds);
+  if (old && old.id !== socket.id) {
+    old.leave(room.code);
+    old.data = {};
+    old.emit("session_replaced");
+    old.disconnect(true);
+  }
+
+  player.socketId = socket.id;
+  player.connected = true;
+  player.disconnectedAt = null;
+
+  socket.data.roomCode = room.code;
+  socket.data.playerId = player.id;
+
+  socket.join(room.code);
+
+  room.emptySince = null;
+  maintainRoom(room);
+}
+
+function currentPlayer(socket) {
+  const room = rooms.get(socket.data.roomCode);
+  const player = room?.players.get(socket.data.playerId);
+
+  return player?.connected && player.socketId === socket.id
+    ? { room, player }
+    : null;
+}
+
+function credentials(room, player) {
+  return {
+    ok: true,
+    code: room.code,
+    playerId: player.id,
+    token: player.token
+  };
+}
+
+function newPlayer(name) {
+  return {
+    id: randomUUID(),
+    token: randomBytes(32).toString("hex"),
+    name,
+    score: 0,
+    connected: false,
+    socketId: null,
+    disconnectedAt: Date.now()
+  };
+}
+
+function reject(cb, error, reason) {
+  if (typeof cb === "function") {
+    cb({ ok: false, error, reason });
+  }
+}
+
+function reply(cb, data) {
+  if (typeof cb === "function") {
+    cb(data);
+  }
+}
+
+// CONNESSIONI E AZIONI DEI GIOCATORI
+
+io.on("connection", socket => {
+  socket.on("create_room", (data = {}, cb) => {
+    if (currentPlayer(socket)) {
+      return reject(cb, "Sei già in una stanza.");
+    }
+
+    const clean = safeName(data.name);
+
+    if (!clean) {
+      return reject(cb, "Inserisci un nome.");
+    }
+
+    const rounds = Math.min(
+      10,
+      Math.max(3, Math.floor(Number(data.totalRounds) || 5))
+    );
+
+    const player = newPlayer(clean);
 
     const room = {
-      code,
-      hostId: socket.id,
+      code: makeRoomCode(),
+      hostId: player.id,
       phase: "lobby",
       roundIndex: 0,
       totalRounds: rounds,
-      players: new Map(),
+
+      players: new Map([[player.id, player]]),
       submissions: new Map(),
       votes: new Map(),
       options: [],
-      questionOrder,
-      currentQuestion: null
+
+      questionOrder: questionOrder(rounds),
+      currentQuestion: null,
+      lastResults: null,
+      roundKey: null,
+      emptySince: null
     };
 
-    room.players.set(socket.id, {
-      id: socket.id,
-      name: clean,
-      score: 0,
-      connected: true
-    });
+    rooms.set(room.code, room);
+    bindPlayer(socket, room, player);
 
-    rooms.set(code, room);
-    socket.join(code);
-    socket.data.roomCode = code;
-    cb?.({ ok: true, code, playerId: socket.id });
+    reply(cb, credentials(room, player));
     broadcastRoom(room);
   });
 
-  socket.on("join_room", ({ code, name }, cb) => {
-    const room = rooms.get(String(code || "").trim().toUpperCase());
-    const clean = safeName(name);
+  socket.on("join_room", (data = {}, cb) => {
+    if (currentPlayer(socket)) {
+      return reject(cb, "Sei già in una stanza.");
+    }
 
-    if (!room) return cb?.({ ok: false, error: "Stanza non trovata." });
-    if (room.phase !== "lobby") return cb?.({ ok: false, error: "La partita è già iniziata." });
-    if (!clean) return cb?.({ ok: false, error: "Inserisci un nome." });
+    const room = rooms.get(
+      String(data.code || "").trim().toUpperCase()
+    );
+
+    if (!room || !maintainRoom(room)) {
+      return reject(
+        cb,
+        "Stanza non trovata: controlla il codice. " +
+        "Potrebbe essere scaduta o il server potrebbe essere stato riavviato."
+      );
+    }
+
+    if (room.phase !== "lobby") {
+      return reject(
+        cb,
+        "Partita già iniziata. " +
+        "Per rientrare usa lo stesso browser con cui partecipavi."
+      );
+    }
+
+    const clean = safeName(data.name);
+
+    if (!clean) {
+      return reject(cb, "Inserisci un nome.");
+    }
 
     const nameTaken = [...room.players.values()].some(
       p => normalize(p.name) === normalize(clean)
     );
-    if (nameTaken) return cb?.({ ok: false, error: "Questo nome è già usato nella stanza." });
 
-    room.players.set(socket.id, {
-      id: socket.id,
-      name: clean,
-      score: 0,
-      connected: true
-    });
+    if (nameTaken) {
+      return reject(
+        cb,
+        "Nome già presente. Se sei tu, rientra dal browser originale; " +
+        "altrimenti scegli un altro nome."
+      );
+    }
 
-    socket.join(room.code);
-    socket.data.roomCode = room.code;
-    cb?.({ ok: true, code: room.code, playerId: socket.id });
+    const player = newPlayer(clean);
+
+    room.players.set(player.id, player);
+    bindPlayer(socket, room, player);
+
+    reply(cb, credentials(room, player));
     broadcastRoom(room);
   });
 
-  socket.on("start_game", ({ totalRounds }, cb) => {
-  const room = rooms.get(socket.data.roomCode);
+  socket.on("resume_session", (data = {}, cb) => {
+    const room = rooms.get(
+      String(data.code || "").trim().toUpperCase()
+    );
 
-  if (!room)
-    return cb?.({ ok: false, error: "Stanza non trovata." });
+    if (!room || !maintainRoom(room)) {
+      return reject(
+        cb,
+        "La stanza è scaduta oppure il server è stato riavviato. " +
+        "Crea o raggiungi una nuova stanza.",
+        "expired"
+      );
+    }
 
-  if (room.hostId !== socket.id)
-    return cb?.({ ok: false, error: "Solo l'host può iniziare." });
+    const player = room.players.get(data.playerId);
 
-  if (activePlayers(room).length < 2)
-    return cb?.({ ok: false, error: "Servono almeno 2 giocatori." });
+    if (
+      !player ||
+      typeof data.token !== "string" ||
+      player.token !== data.token
+    ) {
+      return reject(
+        cb,
+        "Impossibile recuperare questa sessione dal browser.",
+        "invalid"
+      );
+    }
 
-  if (room.phase !== "lobby")
-    return cb?.({ ok: false, error: "La partita è già iniziata." });
+    const current = currentPlayer(socket);
 
-  // Imposta il numero di round scelto nella lobby
-  room.totalRounds = Math.min(
-    10,
-    Math.max(3, Number(totalRounds) || 5)
-  );
+    if (
+      current &&
+      (current.room !== room || current.player !== player)
+    ) {
+      return reject(
+        cb,
+        "Sei già in un'altra stanza.",
+        "busy"
+      );
+    }
 
-  // Genera le domande in base al numero di round scelto
-  room.questionOrder = [...Array(QUESTION_BANK.length).keys()]
-    .sort(() => Math.random() - 0.5)
-    .slice(0, room.totalRounds);
+    bindPlayer(socket, room, player);
 
-  room.roundIndex = 0;
+    reply(cb, credentials(room, player));
+    syncPlayer(socket, room, player);
+    broadcastRoom(room);
+  });
 
-  startRound(room);
+  socket.on("start_game", (data = {}, cb) => {
+    const session = currentPlayer(socket);
 
-  cb?.({ ok: true });
-});
+    if (!session) {
+      return reject(cb, "Riconnessione in corso.");
+    }
 
-  socket.on("submit_bluff", ({ text }, cb) => {
-    const room = rooms.get(socket.data.roomCode);
-    if (!room || room.phase !== "bluff") return cb?.({ ok: false, error: "Non puoi inviare una risposta ora." });
+    const { room, player } = session;
 
-    const clean = String(text || "").trim().slice(0, 60);
-    if (!clean) return cb?.({ ok: false, error: "Scrivi una risposta." });
+    if (room.hostId !== player.id) {
+      return reject(cb, "Solo l'host può iniziare.");
+    }
+
+    if (room.phase !== "lobby") {
+      return reject(cb, "La partita è già iniziata.");
+    }
+
+    if (activePlayers(room).length < 2) {
+      return reject(cb, "Servono almeno 2 giocatori connessi.");
+    }
+
+    room.totalRounds = Math.min(
+      10,
+      Math.max(3, Math.floor(Number(data.totalRounds) || 5))
+    );
+
+    room.questionOrder = questionOrder(room.totalRounds);
+    room.roundIndex = 0;
+
+    startRound(room);
+    reply(cb, { ok: true });
+  });
+
+  socket.on("submit_bluff", (data = {}, cb) => {
+    const session = currentPlayer(socket);
+
+    if (!session) {
+      return reject(cb, "Riconnessione in corso.");
+    }
+
+    const { room, player } = session;
+
+    if (
+      room.phase !== "bluff" ||
+      data.roundKey !== room.roundKey
+    ) {
+      return reject(
+        cb,
+        "Questo turno non accetta più risposte."
+      );
+    }
+
+    // Una risposta già inviata non viene modificata o duplicata.
+    if (room.submissions.has(player.id)) {
+      return reply(cb, { ok: true });
+    }
+
+    const clean = String(data.text || "").trim().slice(0, 60);
+
+    if (!clean) {
+      return reject(cb, "Scrivi una risposta.");
+    }
 
     if (normalize(clean) === normalize(room.currentQuestion.a)) {
-      return cb?.({ ok: false, error: "Questa è la risposta corretta 👀 Scrivi un bluff diverso." });
+      return reject(
+        cb,
+        "Questa è la risposta corretta 👀 Scrivi un bluff diverso."
+      );
     }
 
-    for (const [pid, existing] of room.submissions.entries()) {
-      if (pid !== socket.id && normalize(existing) === normalize(clean)) {
-        return cb?.({ ok: false, error: "Qualcuno ha già scritto una risposta uguale. Cambiala." });
-      }
+    const duplicate = [...room.submissions.values()].some(
+      text => normalize(text) === normalize(clean)
+    );
+
+    if (duplicate) {
+      return reject(
+        cb,
+        "Qualcuno ha già scritto una risposta uguale. Cambiala."
+      );
     }
 
-    room.submissions.set(socket.id, clean);
-    cb?.({ ok: true });
-    io.to(room.code).emit("submission_progress", {
-      submitted: room.submissions.size,
-      total: activePlayers(room).length
-    });
+    room.submissions.set(player.id, clean);
 
+    reply(cb, { ok: true });
+    sendProgress(room);
     maybeAdvanceAfterSubmission(room);
   });
 
-  socket.on("submit_vote", ({ optionId }, cb) => {
-    const room = rooms.get(socket.data.roomCode);
-    if (!room || room.phase !== "vote") return cb?.({ ok: false, error: "Non puoi votare ora." });
+  socket.on("submit_vote", (data = {}, cb) => {
+    const session = currentPlayer(socket);
 
-    const option = room.options.find(o => o.id === optionId);
-    if (!option) return cb?.({ ok: false, error: "Risposta non valida." });
-    if (option.ownerId === socket.id) return cb?.({ ok: false, error: "Non puoi votare la tua risposta." });
+    if (!session) {
+      return reject(cb, "Riconnessione in corso.");
+    }
 
-    room.votes.set(socket.id, optionId);
-    cb?.({ ok: true });
-    io.to(room.code).emit("vote_progress", {
-      voted: room.votes.size,
-      total: activePlayers(room).length
-    });
+    const { room, player } = session;
 
+    if (
+      room.phase !== "vote" ||
+      data.roundKey !== room.roundKey
+    ) {
+      return reject(cb, "Non puoi votare ora.");
+    }
+
+    // Un voto già inviato non viene modificato o duplicato.
+    if (room.votes.has(player.id)) {
+      return reply(cb, { ok: true });
+    }
+
+    const option = room.options.find(
+      o => o.id === data.optionId
+    );
+
+    if (!option) {
+      return reject(cb, "Risposta non valida.");
+    }
+
+    if (option.ownerId === player.id) {
+      return reject(cb, "Non puoi votare la tua risposta.");
+    }
+
+    room.votes.set(player.id, option.id);
+
+    reply(cb, { ok: true });
+    sendProgress(room);
     maybeReveal(room);
   });
 
   socket.on("next_round", (_, cb) => {
-    const room = rooms.get(socket.data.roomCode);
-    if (!room) return cb?.({ ok: false, error: "Stanza non trovata." });
-    if (room.hostId !== socket.id) return cb?.({ ok: false, error: "Solo l'host può continuare." });
-    if (room.phase !== "results") return cb?.({ ok: false, error: "Il round non è ancora finito." });
+    const session = currentPlayer(socket);
 
-    room.roundIndex += 1;
+    if (!session) {
+      return reject(cb, "Riconnessione in corso.");
+    }
+
+    const { room, player } = session;
+
+    if (room.hostId !== player.id) {
+      return reject(cb, "Solo l'host può continuare.");
+    }
+
+    if (room.phase !== "results") {
+      return reject(cb, "Il round non è ancora finito.");
+    }
+
+    room.roundIndex++;
+
     startRound(room);
-    cb?.({ ok: true });
+    reply(cb, { ok: true });
   });
 
   socket.on("restart_game", (_, cb) => {
-    const room = rooms.get(socket.data.roomCode);
-    if (!room) return cb?.({ ok: false, error: "Stanza non trovata." });
-    if (room.hostId !== socket.id) return cb?.({ ok: false, error: "Solo l'host può riavviare." });
-    if (room.phase !== "final") return cb?.({ ok: false, error: "La partita non è finita." });
+    const session = currentPlayer(socket);
 
-    for (const p of room.players.values()) p.score = 0;
+    if (!session) {
+      return reject(cb, "Riconnessione in corso.");
+    }
+
+    const { room, player } = session;
+
+    if (room.hostId !== player.id) {
+      return reject(cb, "Solo l'host può riavviare.");
+    }
+
+    if (room.phase !== "final") {
+      return reject(cb, "La partita non è finita.");
+    }
+
+    for (const p of room.players.values()) {
+      p.score = 0;
+    }
+
     room.roundIndex = 0;
     room.phase = "lobby";
-    room.questionOrder = [...Array(QUESTION_BANK.length).keys()]
-      .sort(() => Math.random() - 0.5)
-      .slice(0, room.totalRounds);
+    room.roundKey = null;
+    room.lastResults = null;
+    room.submissions.clear();
+    room.votes.clear();
+    room.options = [];
 
     io.to(room.code).emit("back_to_lobby");
     broadcastRoom(room);
-    cb?.({ ok: true });
+
+    reply(cb, { ok: true });
   });
 
   socket.on("disconnect", () => {
@@ -716,6 +1130,21 @@ io.on("connection", socket => {
   });
 });
 
+// Controlla scadenze, attese e passaggio del ruolo di host.
+setInterval(() => {
+  for (const room of rooms.values()) {
+    const oldHost = room.hostId;
+
+    if (maintainRoom(room)) {
+      if (oldHost !== room.hostId) {
+        broadcastRoom(room);
+      }
+
+      sendProgress(room);
+    }
+  }
+}, 1000).unref();
+
 server.listen(PORT, () => {
-  console.log(`BLUFF1.0 attivo su http://localhost:${PORT}`);
+  console.log(`BLUFF attivo sulla porta ${PORT}`);
 });
