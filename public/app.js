@@ -34,15 +34,73 @@ function updateHostUI() {
   $("waitHostRestart").classList.toggle("hidden", isHost());
 }
 
+function findAvatarPlayer(player) {
+  const reference = typeof player === "string"
+    ? { name: player }
+    : (player || {});
+
+  const players = latestRoom?.players || [];
+
+  return players.find(p =>
+    reference.id
+      ? p.id === reference.id
+      : p.name === reference.name
+  ) || reference;
+}
+
+function avatarHtml(player) {
+  const p = findAvatarPlayer(player);
+  const name = String(p.name || "Giocatore");
+  const initial = Array.from(name.trim())[0]?.toUpperCase() || "?";
+
+  // Accetta solo i formati di colore generati dal server.
+  const rawColor = String(p.color || "");
+  const validColor =
+    /^#[0-9a-f]{6}$/i.test(rawColor) ||
+    /^hsl\(\d{1,3}(?:\.\d{1,3})?, 70%, 72%\)$/.test(rawColor);
+
+  const color = validColor ? rawColor : "#CCCCCC";
+
+  return `
+    <span
+      class="player-avatar"
+      style="--avatar-color: ${color}"
+      aria-hidden="true"
+    >${escapeHtml(initial)}</span>
+  `;
+}
+
+function playerChipHtml(player) {
+  const p = findAvatarPlayer(player);
+  const name = p.name || "Giocatore";
+
+  return `
+    <span class="avatar-chip" title="${escapeHtml(name)}">
+      ${avatarHtml(p)}
+      <span class="avatar-caption">${escapeHtml(name)}</span>
+    </span>
+  `;
+}
+
 function renderPlayers(players) {
   $("playerCount").textContent = players.length;
+
   $("playersList").innerHTML = players.map(p => `
     <div class="player-row">
-      <div>
-        <span class="player-name">${escapeHtml(p.name)}</span>
-        ${p.id === hostId ? '<span class="host-chip">HOST</span>' : ''}
+      <div class="player-identity">
+        ${avatarHtml(p)}
+
+        <div class="player-label">
+          <span class="player-name">${escapeHtml(p.name)}</span>
+          ${p.id === hostId
+            ? '<span class="host-chip">HOST</span>'
+            : ""}
+        </div>
       </div>
-      <span>${p.connected ? "●" : "○"}</span>
+
+      <span aria-label="${p.connected ? "Connesso" : "Disconnesso"}">
+        ${p.connected ? "●" : "○"}
+      </span>
     </div>
   `).join("");
 }
@@ -50,10 +108,12 @@ function renderPlayers(players) {
 function renderScores(scores, targetId) {
   $(targetId).innerHTML = scores.map((p, i) => `
     <div class="score-row">
-      <div style="display:flex;align-items:center;gap:10px;">
+      <div class="player-identity">
         <span class="score-rank">${i + 1}</span>
+        ${avatarHtml(p)}
         <span class="player-name">${escapeHtml(p.name)}</span>
       </div>
+
       <span class="score-num">${p.score}</span>
     </div>
   `).join("");
@@ -192,17 +252,41 @@ socket.on("vote_progress", data => {
 socket.on("round_results", data => {
   $("correctAnswerText").textContent = data.correctAnswer;
 
+  // I punteggi contengono anche i colori assegnati dal server.
+  if (latestRoom && Array.isArray(data.scores)) {
+    latestRoom.players = data.scores;
+  }
+
   $("resultOptions").innerHTML = data.options.map(o => {
-    const votes = o.voters.length
-      ? `Votata da: <strong>${o.voters.map(escapeHtml).join(", ")}</strong>`
-      : "Nessun voto";
     const author = o.isCorrect
-      ? "Risposta corretta"
-      : `Bluff di <strong>${escapeHtml(o.ownerName || "Giocatore")}</strong>`;
+      ? '<div class="result-author">Risposta corretta ✅</div>'
+      : `
+        <div class="result-author">
+          <span>Bluff di:</span>
+          ${playerChipHtml(o.ownerName || "Giocatore")}
+        </div>
+      `;
+
+    const votes = o.voters.length
+      ? `
+        <div class="result-votes">
+          <span>Votata da:</span>
+
+          <div class="voter-avatars">
+            ${o.voters.map(name => playerChipHtml(name)).join("")}
+          </div>
+        </div>
+      `
+      : '<div class="result-votes">Nessun voto</div>';
+
     return `
       <div class="result-card ${o.isCorrect ? "correct" : "false"}">
-        <div class="result-text">${escapeHtml(o.text)} ${o.isCorrect ? "✅" : ""}</div>
-        <div class="result-meta">${author}<br>${votes}</div>
+        <div class="result-text">${escapeHtml(o.text)}</div>
+
+        <div class="result-meta">
+          ${author}
+          ${votes}
+        </div>
       </div>
     `;
   }).join("");
