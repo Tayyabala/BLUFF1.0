@@ -94,9 +94,53 @@ function safeName(name) {
 }
 
 function publicPlayers(room) {
+  const palette = [
+    "#FF7676", // Rosso
+    "#69AEFF", // Blu
+    "#65D99A", // Verde
+    "#FFD166", // Giallo
+    "#BE98FF", // Viola
+    "#FFAD66", // Arancione
+    "#FF91C8", // Rosa
+    "#66DDD5", // Turchese
+    "#C4DE70", // Lime
+    "#C9AC91", // Sabbia
+    "#A8BCFF", // Lavanda
+    "#EEEEEE"  // Bianco
+  ];
+
+  const usedColors = new Set(
+    [...room.players.values()]
+      .map(p => p.color)
+      .filter(Boolean)
+  );
+
+  for (const player of room.players.values()) {
+    if (player.color) continue;
+
+    let color = palette.find(c => !usedColors.has(c));
+
+    // Se finiscono i colori della palette, ne genera altri.
+    if (!color) {
+      let index = room.avatarColorIndex || 0;
+
+      do {
+        const hue = (index * 137.508) % 360;
+        color = `hsl(${hue.toFixed(3)}, 70%, 72%)`;
+        index++;
+      } while (usedColors.has(color));
+
+      room.avatarColorIndex = index;
+    }
+
+    player.color = color;
+    usedColors.add(color);
+  }
+
   return [...room.players.values()].map(p => ({
     id: p.id,
     name: p.name,
+    color: p.color,
     score: p.score,
     connected: p.connected
   }));
