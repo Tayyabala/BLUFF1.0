@@ -254,17 +254,21 @@ socket.on("vote_progress", data => {
 socket.on("round_results", data => {
   $("correctAnswerText").textContent = data.correctAnswer;
 
-  // I punteggi contengono anche i colori assegnati dal server.
   if (latestRoom && Array.isArray(data.scores)) {
     latestRoom.players = data.scores;
   }
 
   $("resultOptions").innerHTML = data.options.map(o => {
     const author = o.isCorrect
-      ? '<div class="result-author">Risposta corretta ✅</div>'
+      ? `
+        <div class="answer-correct-label">
+          <span aria-hidden="true">✓</span>
+          <span>Risposta corretta</span>
+        </div>
+      `
       : `
-        <div class="result-author">
-          <span>Bluff di:</span>
+        <div class="answer-author">
+          <span class="answer-author-label">Bluff di:</span>
           ${playerChipHtml(o.ownerName || "Giocatore")}
         </div>
       `;
@@ -283,10 +287,12 @@ socket.on("round_results", data => {
 
     return `
       <div class="result-card ${o.isCorrect ? "correct" : "false"}">
-        <div class="result-text">${escapeHtml(o.text)}</div>
+        <div class="answer-header">
+          <div class="result-text">${escapeHtml(o.text)}</div>
+          ${author}
+        </div>
 
         <div class="result-meta">
-          ${author}
           ${votes}
         </div>
       </div>
